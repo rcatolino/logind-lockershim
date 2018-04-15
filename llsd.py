@@ -15,14 +15,16 @@ class LogindManagerProxy:
     name = "org.freedesktop.login1"
     path = "/org/freedesktop/login1"
     interface = "org.freedesktop.login1.Manager"
-    def __init__(self, bus):
+    def __init__(self, bus, session_id, locker_args):
         self.bus = bus
         dbobj = bus.get_object(LogindManagerProxy.name, LogindManagerProxy.path)
         self.dbif = dbus.Interface(dbobj, dbus_interface=LogindManagerProxy.interface)
-
-    def get_user_session_proxy(self, session_id, locker_args):
         session_path = self.dbif.GetSession(session_id)
-        return LogindSessionProxy(self.bus, session_path, locker_args)
+        self.session_proxy = LogindSessionProxy(self.bus, session_path, locker_args)
+        self.dbif.connect_to_signal("PrepareForSleep", lambda before: self.session_proxy.on_sleep(before))
+
+    def get_user_session_proxy(self):
+        return self.session_proxy
 
 class LogindSessionProxy:
     name = "org.freedesktop.login1"
@@ -40,6 +42,11 @@ class LogindSessionProxy:
 
     def is_locked(self):
         return self.locker is not None and self.locker.poll() is None
+
+    def on_sleep(self, before_sleep):
+        if before_sleep:
+            print("Going to sleep signal, locking")
+            self.on_lock()
 
     def on_lock(self):
         print("Lock signal")
@@ -69,8 +76,8 @@ if len(locker_args) == 0 or locker_args[0] == "-h" or locker_args[0] == "--help"
     exit(0)
 
 system_bus = dbus.SystemBus()
-manager = LogindManagerProxy(system_bus)
-proxy = manager.get_user_session_proxy(os.environ['XDG_SESSION_ID'], locker_args)
+manager = LogindManagerProxy(system_bus, os.environ['XDG_SESSION_ID'], locker_args)
+proxy = manager.get_user_session_proxy()
 
 print("{}\t{}\t{}\t{}\t{}".format(proxy.get_prop("Id"), proxy.get_prop("Name"),
     proxy.get_prop("TTY"), proxy.get_prop("Type"), proxy.get_prop("LockedHint")))
