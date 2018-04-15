@@ -4,6 +4,7 @@ import os
 import dbus
 import subprocess
 import sys
+import time
 
 from dbus.mainloop.glib import DBusGMainLoop
 from gi.repository import GLib
@@ -21,7 +22,21 @@ class LogindManagerProxy:
         self.dbif = dbus.Interface(dbobj, dbus_interface=LogindManagerProxy.interface)
         session_path = self.dbif.GetSession(session_id)
         self.session_proxy = LogindSessionProxy(self.bus, session_path, locker_args)
-        self.dbif.connect_to_signal("PrepareForSleep", lambda before: self.session_proxy.on_sleep(before))
+        self.get_inhibitor()
+        self.dbif.connect_to_signal("PrepareForSleep", lambda before: self.on_sleep(before))
+
+    def get_inhibitor(self):
+        self.inhibitor = self.dbif.Inhibit("sleep", "Screenlock Manager",
+                "Star the lock screen before going to sleep", "delay")
+
+    def on_sleep(self, before_sleep):
+        if before_sleep:
+            print("Going to sleep signal, locking")
+            self.session_proxy.on_lock()
+            time.sleep(0.5) # hum.
+            os.close(self.inhibitor.take())
+        else:
+            self.get_inhibitor()
 
     def get_user_session_proxy(self):
         return self.session_proxy
@@ -43,10 +58,6 @@ class LogindSessionProxy:
     def is_locked(self):
         return self.locker is not None and self.locker.poll() is None
 
-    def on_sleep(self, before_sleep):
-        if before_sleep:
-            print("Going to sleep signal, locking")
-            self.on_lock()
 
     def on_lock(self):
         print("Lock signal")
