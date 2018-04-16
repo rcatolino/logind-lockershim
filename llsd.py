@@ -3,6 +3,7 @@
 import os
 import dbus
 import subprocess
+import signal
 import sys
 import time
 
@@ -50,14 +51,19 @@ class LogindSessionProxy:
         dbobj = bus.get_object(LogindSessionProxy.name, path)
         self.dbif = dbus.Interface(dbobj, dbus_interface=LogindSessionProxy.interface)
         self.props = dbus.Interface(dbobj, dbus_interface=LogindSessionProxy.properties)
+        signal.signal(signal.SIGCHLD, lambda signum, _: self.reap_locker())
         self.dbif.connect_to_signal("Lock", lambda: self.on_lock())
         self.dbif.connect_to_signal("Unlock", lambda: self.on_unlock())
         self.locker_args = locker_args
         self.locker = None
 
+    def reap_locker(self):
+        result = self.locker.poll()
+        print("Locker process returned status {}".format(result))
+        self.locker = None
+
     def is_locked(self):
         return self.locker is not None and self.locker.poll() is None
-
 
     def on_lock(self):
         print("Lock signal")
