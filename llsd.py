@@ -13,18 +13,38 @@ from gi.repository import GLib
 DBusGMainLoop(set_as_default=True)
 loop = GLib.MainLoop()
 
+class PMProxy:
+    name = "org.freedesktop.PowerManagement"
+    path = "/org/freedesktop/PowerManagement"
+    interface = "org.freedesktop.PowerManagement.Inhibit"
+    def __init__(self, bus, session_id):
+        self.bus = bus
+        dbobj = bus.get_object(PMProxy.name, PMProxy.path)
+        self.dbif = dbus.Interface(dbobj, dbus_interface=PMProxy.interface)
+
+    def has_inhibit(self):
+        return self.dbif.HasInhibit()
+
 class LogindManagerProxy:
     name = "org.freedesktop.login1"
     path = "/org/freedesktop/login1"
+    properties = "org.freedesktop.DBus.Properties"
     interface = "org.freedesktop.login1.Manager"
-    def __init__(self, bus, session_id, locker_args):
+
+    def __init__(self, bus, session_id, locker_args, pmproxy):
         self.bus = bus
         dbobj = bus.get_object(LogindManagerProxy.name, LogindManagerProxy.path)
         self.dbif = dbus.Interface(dbobj, dbus_interface=LogindManagerProxy.interface)
+        self.props = dbus.Interface(dbobj, dbus_interface=LogindSessionProxy.properties)
+        self.props.connect_to_signal("PropertiesChanged", lambda ifname, changed_prop, _ :
+                self.on_prop_change(ifname, changed_prop))
         session_path = self.dbif.GetSession(session_id)
-        self.session_proxy = LogindSessionProxy(self.bus, session_path, locker_args)
+        self.session_proxy = LogindSessionProxy(self.bus, session_path, locker_args, pmproxy)
         self.get_inhibitor()
         self.dbif.connect_to_signal("PrepareForSleep", lambda before: self.on_sleep(before))
+
+    def on_prop_change(self, interface, changed_prop):
+        print("Properties changed : {}/{}".format(interface, changed_prop))
 
     def get_inhibitor(self):
         self.inhibitor = self.dbif.Inhibit("sleep", "Screenlock Manager",
@@ -33,7 +53,7 @@ class LogindManagerProxy:
     def on_sleep(self, before_sleep):
         if before_sleep:
             print("Going to sleep signal, locking")
-            self.session_proxy.on_lock()
+            self.session_proxy.do_lock()
             time.sleep(0.5) # hum.
             os.close(self.inhibitor.take())
         else:
@@ -47,7 +67,7 @@ class LogindSessionProxy:
     interface = "org.freedesktop.login1.Session"
     properties = "org.freedesktop.DBus.Properties"
 
-    def __init__(self, bus, path, locker_args):
+    def __init__(self, bus, path, locker_args, pmproxy):
         dbobj = bus.get_object(LogindSessionProxy.name, path)
         self.dbif = dbus.Interface(dbobj, dbus_interface=LogindSessionProxy.interface)
         self.props = dbus.Interface(dbobj, dbus_interface=LogindSessionProxy.properties)
@@ -55,9 +75,12 @@ class LogindSessionProxy:
         self.dbif.connect_to_signal("Lock", lambda: self.on_lock())
         self.dbif.connect_to_signal("Unlock", lambda: self.on_unlock())
         self.locker_args = locker_args
+        self.pmproxy = pmproxy
         self.locker = None
 
     def reap_locker(self):
+        if self.locker is None:
+            return
         result = self.locker.poll()
         print("Locker process returned status {}".format(result))
         self.locker = None
@@ -66,6 +89,14 @@ class LogindSessionProxy:
         return self.locker is not None and self.locker.poll() is None
 
     def on_lock(self):
+        if self.pmproxy.has_inhibit():
+            print("Session pm is inhibited, ignoring lock request")
+        else:
+            self.do_lock()
+            time.sleep(1)
+            subprocess.run(["swaymsg", "output * dpms off"])
+
+    def do_lock(self):
         print("Lock signal")
         if self.is_locked():
             print("Already locked, ignoring lock request")
@@ -93,7 +124,9 @@ if len(locker_args) == 0 or locker_args[0] == "-h" or locker_args[0] == "--help"
     exit(0)
 
 system_bus = dbus.SystemBus()
-manager = LogindManagerProxy(system_bus, os.environ['XDG_SESSION_ID'], locker_args)
+session_bus = dbus.SessionBus()
+pmproxy = PMProxy(session_bus, os.environ['XDG_SESSION_ID'])
+manager = LogindManagerProxy(system_bus, os.environ['XDG_SESSION_ID'], locker_args, pmproxy)
 proxy = manager.get_user_session_proxy()
 
 print("{}\t{}\t{}\t{}\t{}".format(proxy.get_prop("Id"), proxy.get_prop("Name"),
