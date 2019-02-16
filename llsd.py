@@ -25,6 +25,9 @@ class PMProxy:
     def has_inhibit(self):
         return self.dbif.HasInhibit()
 
+class AlreadyRunningError(Exception):
+    pass
+
 class LogindManagerProxy:
     name = "org.freedesktop.login1"
     path = "/org/freedesktop/login1"
@@ -40,6 +43,10 @@ class LogindManagerProxy:
                 self.on_prop_change(ifname, changed_prop))
         session_path = self.dbif.GetSession(session_id)
         self.session_proxy = LogindSessionProxy(self.bus, session_path, locker_args, pmproxy)
+        for i in self.dbif.ListInhibitors():
+            if i[1] == "Screenlock Manager":
+                print("Error LLSD has already been started.")
+                raise AlreadyRunningError
         self.get_inhibitor()
         self.dbif.connect_to_signal("PrepareForSleep", lambda before: self.on_sleep(before))
 
@@ -48,7 +55,7 @@ class LogindManagerProxy:
 
     def get_inhibitor(self):
         self.inhibitor = self.dbif.Inhibit("sleep", "Screenlock Manager",
-                "Star the lock screen before going to sleep", "delay")
+                "Start the lock screen before going to sleep", "delay")
 
     def on_sleep(self, before_sleep):
         if before_sleep:
